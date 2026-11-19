@@ -1,0 +1,82 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Find the project (unzip it if you uploaded the ZIP)
+        run: |
+          if [ -f settings.gradle.kts ]; then
+            PROJECT=.
+          else
+            ZIP=$(find . -maxdepth 2 -iname '*.zip' | head -n 1)
+            if [ -z "$ZIP" ]; then echo "No project and no ZIP found in the repository"; exit 1; fi
+            echo "Unzipping $ZIP"
+            mkdir -p /tmp/project
+            unzip -q -o "$ZIP" -d /tmp/project
+            SETTINGS=$(find /tmp/project -name settings.gradle.kts | head -n 1)
+            if [ -z "$SETTINGS" ]; then echo "settings.gradle.kts not found inside the ZIP"; exit 1; fi
+            PROJECT=$(dirname "$SETTINGS")
+          fi
+          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
+          echo "Project folder: $PROJECT"
+          ls -la "$PROJECT"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK (and accept licenses)
+        uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
+          packages: "platform-tools platforms;android-34 build-tools;34.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.7
+
+      - name: Create the Gradle wrapper (gradlew)
+        working-directory: ${{ env.PROJECT }}
+        run: gradle wrapper --gradle-version 8.7 --no-daemon
+
+      - name: Build debug APK
+        working-directory: ${{ env.PROJECT }}
+        run: ./gradlew assembleDebug --stacktrace --no-daemon
+
+      - name: Verify the APK exists
+        working-directory: ${{ env.PROJECT }}
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          if [ ! -f "$APK" ]; then echo "APK was NOT generated"; exit 1; fi
+          ls -l "$APK"
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WhatsAppMessageVault-debug-apk
+          path: ${{ env.PROJECT }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Upload build reports (only if something failed)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-error-reports
+          path: ${{ env.PROJECT }}/app/build/reports
+          if-no-files-found: ignore
